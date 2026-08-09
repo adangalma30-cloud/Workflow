@@ -50,7 +50,7 @@ jobs:
 
       - name: Install Compass dependencies
         working-directory: compass
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Build web assets
         working-directory: compass
