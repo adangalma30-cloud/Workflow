@@ -33,8 +33,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: compass/package-lock.json
+          cache: pnpm
+          cache-dependency-path: compass/package.json
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -50,15 +55,15 @@ jobs:
 
       - name: Install Compass dependencies
         working-directory: compass
-        run: npm install --no-audit --no-fund
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build web assets
         working-directory: compass
-        run: npm run build
+        run: pnpm run build
 
       - name: Sync Capacitor Android project
         working-directory: compass
-        run: npx cap sync android
+        run: pnpm exec cap sync android
 
       - name: Build debug APK
         working-directory: compass/android
