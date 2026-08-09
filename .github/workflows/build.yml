@@ -1,0 +1,73 @@
+name: Build Compass APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      compass_ref:
+        description: "Compass branch, tag, or commit to build"
+        required: false
+        default: "main"
+        type: string
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out Compass
+        uses: actions/checkout@v4
+        with:
+          repository: adangalma30-cloud/compass
+          ref: ${{ inputs.compass_ref || 'main' }}
+          path: compass
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: compass/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install Compass dependencies
+        working-directory: compass
+        run: npm ci
+
+      - name: Build web assets
+        working-directory: compass
+        run: npm run build
+
+      - name: Sync Capacitor Android project
+        working-directory: compass
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: compass/android
+        run: ./gradlew assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: compass-debug-apk
+          path: compass/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
