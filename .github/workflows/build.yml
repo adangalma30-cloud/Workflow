@@ -6,8 +6,16 @@ on:
       compass_ref:
         description: "Compass branch, tag, or commit to build"
         required: false
-        default: "main"
+        default: "compass-0.0.5"
         type: string
+      build_type:
+        description: "APK build type"
+        required: false
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
   push:
     branches:
       - main
@@ -18,7 +26,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Android debug APK
+    name: Build Android ${{ inputs.build_type || 'debug' }} APK
     runs-on: ubuntu-latest
 
     steps:
@@ -26,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: adangalma30-cloud/compass
-          ref: ${{ inputs.compass_ref || 'main' }}
+          ref: ${{ inputs.compass_ref || 'compass-0.0.5' }}
           path: compass
 
       - name: Set up pnpm
@@ -39,12 +47,14 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: compass/package.json
+          # Cache on the lockfile so the key changes only when deps change.
+          cache-dependency-path: compass/pnpm-lock.yaml
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
+          # Capacitor 7 compiles against Java 21.
           java-version: "21"
 
       - name: Set up Android SDK
@@ -53,26 +63,82 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('compass/android/**/*.gradle', 'compass/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
       - name: Install Compass dependencies
         working-directory: compass
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Report missing configuration
+        working-directory: compass
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: |
+          if [ -z "$VITE_CLERK_PUBLISHABLE_KEY" ]; then
+            echo "::warning::VITE_CLERK_PUBLISHABLE_KEY secret is not set. The APK will build but will show 'Compass authentication is not configured' and sign-in will not work."
+          fi
+          if [ -z "$VITE_API_URL" ]; then
+            echo "::warning::VITE_API_URL secret is not set. The APK cannot reach the API from a device, so sign-in will fail."
+          fi
 
       - name: Build web assets
         working-directory: compass
+        env:
+          # Compiled into the bundle at build time. Both are public values.
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: pnpm run build
 
       - name: Sync Capacitor Android project
         working-directory: compass
         run: pnpm exec cap sync android
 
-      - name: Build debug APK
+      - name: Make Gradle wrapper executable
         working-directory: compass/android
-        run: ./gradlew assembleDebug
+        run: chmod +x gradlew
 
-      - name: Upload debug APK
+      - name: Build APK
+        working-directory: compass/android
+        run: |
+          if [ "${{ inputs.build_type || 'debug' }}" = "release" ]; then
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Locate APK
+        id: apk
+        working-directory: compass/android
+        run: |
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK was produced." >&2
+            exit 1
+          fi
+          echo "path=compass/android/$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "Built $APK_PATH ($(du -h "$APK_PATH" | cut -f1))"
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: compass-debug-apk
-          path: compass/android/app/build/outputs/apk/debug/app-debug.apk
+          name: compass-${{ inputs.build_type || 'debug' }}-apk
+          path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload Gradle reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-reports
+          path: compass/android/app/build/reports/
+          if-no-files-found: ignore
+          retention-days: 7
